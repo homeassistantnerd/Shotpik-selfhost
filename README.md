@@ -126,15 +126,24 @@ npm run dev:frontend
 
 ### Method 1: Docker Compose (Recommended)
 
-Docker Compose is the fastest and most reliable way to run Shotpik in production with zero external runtime dependencies.
+Docker Compose is the fastest and most reliable way to run Shotpik in production with zero external runtime dependencies on the host machine (no Node.js or npm required).
 
-#### 1. Setup Configuration
-Create a `docker-compose.yml` file (or use the one in the repository):
+The repository includes a ready-to-run [`docker-compose.yml`](docker-compose.yml) and an optimized multi-stage [`Dockerfile`](Dockerfile) that automatically builds the shared libraries, bundles the Vite frontend, compiles the Express backend, and serves the whole application inside a lightweight Alpine Linux container.
+
+#### 1. Clone the Repository
+On your server or local machine, pull down the repository and enter the directory:
+
+```bash
+git clone https://github.com/homeassistantnerd/Shotpik-selfhost.git
+cd Shotpik-selfhost
+```
+
+#### 2. (Optional) Review Configuration in `docker-compose.yml`
+The included `docker-compose.yml` is pre-configured and ready out of the box:
 
 ```yaml
 services:
   shotpik:
-    image: shotpik-app:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -147,10 +156,10 @@ services:
       - PORT=3000
       - DATABASE_PATH=/app/data/shotpik.db
       - STUDIO_NAME=My Photography Studio
-      - APP_BASE_URL=https://proofing.yourstudio.com
+      - APP_BASE_URL=http://localhost:3000
     volumes:
       - ./data:/app/data
-      # Optional: Mount your local/NAS RAW folder for server-side file copying
+      # Optional: Mount your server/NAS RAW photo folder for 1-click server-side RAW copying
       # - /mnt/nas/raw_photos:/raw_library:ro
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
@@ -160,16 +169,29 @@ services:
       start_period: 10s
 ```
 
-#### 2. Launch Container
-```bash
-# Build and start in detached background mode
-docker compose up -d --build
+> **Tip**: If you are using a custom domain with SSL (e.g., `https://proofing.yourstudio.com`), set `APP_BASE_URL=https://proofing.yourstudio.com` so QR codes and client share links use your public domain.
 
-# View container logs
+#### 3. Build & Launch Containers
+Run Docker Compose with the `--build` flag to trigger the multi-stage build:
+
+```bash
+docker compose up -d --build
+```
+
+#### 4. Verify Status & Logs
+```bash
+# Check container status
+docker compose ps
+
+# Follow live server logs
 docker compose logs -f
 ```
 
-Data will be stored persistently in `./data/shotpik.db`.
+Your service will be live at `http://<your-server-ip>:3000`:
+- **Admin Dashboard**: `http://<your-server-ip>:3000/admin`
+- **Healthcheck**: `http://<your-server-ip>:3000/api/health`
+
+Data is persisted automatically in the `./data` directory (`./data/shotpik.db`) on the host.
 
 ---
 
