@@ -231,10 +231,12 @@ export const ClientAlbum: React.FC = () => {
   // Handle comment deletion
   const handleDeleteComment = async (commentId: string) => {
     if (!slug) return;
+    const query = activeChooserId ? `?chooserId=${encodeURIComponent(activeChooserId)}` : '';
     const res = await fetch(
-      `/api/client/albums/${slug}/comments/${commentId}`,
+      `/api/client/albums/${slug}/comments/${commentId}${query}`,
       {
         method: 'DELETE',
+        headers: activeChooserId ? { 'x-chooser-id': activeChooserId } : {},
       }
     );
     if (!res.ok) {
@@ -283,10 +285,19 @@ export const ClientAlbum: React.FC = () => {
   // Handle finish album
   const handleFinishAlbum = async () => {
     if (!slug) return;
+    if (!activeChooserId) {
+      setIsChooserModalOpen(true);
+      return;
+    }
     try {
       setIsFinishing(true);
       const res = await fetch(`/api/client/albums/${slug}/finish`, {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-chooser-id': activeChooserId,
+        },
+        body: JSON.stringify({ chooserId: activeChooserId }),
       });
       const data: FinishAlbumResponse & { album?: Album } = await res.json();
       if (!res.ok) {

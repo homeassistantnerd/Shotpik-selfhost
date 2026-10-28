@@ -34,6 +34,50 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 
+const getAdminHeaders = (): Record<string, string> => {
+  const key = localStorage.getItem('shotpik_admin_key');
+  return key ? { 'x-admin-key': key } : {};
+};
+
+const getAdminKeyQuery = (): string => {
+  const key = localStorage.getItem('shotpik_admin_key');
+  return key ? `&adminKey=${encodeURIComponent(key)}` : '';
+};
+
+const adminFetch = async (
+  input: RequestInfo | URL,
+  init?: RequestInit
+): Promise<Response> => {
+  const adminHeaders = getAdminHeaders();
+  const headers = new Headers(init?.headers);
+  for (const [k, v] of Object.entries(adminHeaders)) {
+    if (!headers.has(k)) {
+      headers.set(k, v);
+    }
+  }
+
+  const res = await fetch(input, { ...init, headers });
+
+  if (res.status === 401 || res.status === 403) {
+    const errorData = await res.clone().json().catch(() => ({}));
+    if (
+      typeof errorData.error === 'string' &&
+      errorData.error.toLowerCase().includes('admin')
+    ) {
+      const enteredKey = window.prompt(
+        'Server yêu cầu mã xác thực quản trị (Admin Key). Vui lòng nhập mã:'
+      );
+      if (enteredKey && enteredKey.trim()) {
+        localStorage.setItem('shotpik_admin_key', enteredKey.trim());
+        headers.set('x-admin-key', enteredKey.trim());
+        return fetch(input, { ...init, headers });
+      }
+    }
+  }
+
+  return res;
+};
+
 export const AdminDashboard: React.FC = () => {
   // Navigation tabs: 'albums' | 'settings'
   const [activeNavTab, setActiveNavTab] = useState<'albums' | 'settings'>('albums');
@@ -105,7 +149,7 @@ export const AdminDashboard: React.FC = () => {
   const fetchAlbums = useCallback(async () => {
     try {
       setLoadingAlbums(true);
-      const res = await fetch('/api/admin/albums');
+      const res = await adminFetch('/api/admin/albums');
       if (!res.ok) throw new Error('Không thể tải danh sách album');
       const data = await res.json();
       setAlbums(data.albums || []);
@@ -121,7 +165,7 @@ export const AdminDashboard: React.FC = () => {
   const fetchSettings = useCallback(async () => {
     try {
       setLoadingSettings(true);
-      const res = await fetch('/api/admin/settings');
+      const res = await adminFetch('/api/admin/settings');
       if (!res.ok) throw new Error('Không thể tải cài đặt studio');
       const data = await res.json();
       if (data.settings) {
@@ -151,7 +195,7 @@ export const AdminDashboard: React.FC = () => {
       setIsCreating(true);
       setCreateError(null);
 
-      const res = await fetch('/api/admin/albums', {
+      const res = await adminFetch('/api/admin/albums', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -171,7 +215,7 @@ export const AdminDashboard: React.FC = () => {
       // If deadlineAt was provided, update it via PATCH
       if (createForm.deadlineAt) {
         const isoDeadline = new Date(createForm.deadlineAt).toISOString();
-        await fetch(`/api/admin/albums/${data.id || data.album.id}`, {
+        await adminFetch(`/api/admin/albums/${data.id || data.album.id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ deadlineAt: isoDeadline }),
@@ -202,7 +246,7 @@ export const AdminDashboard: React.FC = () => {
   // Handle album lock toggle
   const handleToggleLock = async (album: AdminAlbumSummary) => {
     try {
-      const res = await fetch(`/api/admin/albums/${album.id}`, {
+      const res = await adminFetch(`/api/admin/albums/${album.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ isLocked: !album.isLocked }),
@@ -223,7 +267,7 @@ export const AdminDashboard: React.FC = () => {
   const handleSyncAlbum = async (album: AdminAlbumSummary) => {
     try {
       setSyncingAlbumId(album.id);
-      const res = await fetch(`/api/admin/albums/${album.id}/sync`, {
+      const res = await adminFetch(`/api/admin/albums/${album.id}/sync`, {
         method: 'POST',
       });
       const data = await res.json();
@@ -250,7 +294,7 @@ export const AdminDashboard: React.FC = () => {
     }
 
     try {
-      const res = await fetch(`/api/admin/albums/${album.id}`, {
+      const res = await adminFetch(`/api/admin/albums/${album.id}`, {
         method: 'DELETE',
       });
       if (!res.ok) throw new Error('Không thể xoá album');
@@ -269,8 +313,8 @@ export const AdminDashboard: React.FC = () => {
     try {
       setLoadingExportData(true);
       const [detailRes, lrRes] = await Promise.all([
-        fetch(`/api/admin/albums/${album.id}`),
-        fetch(`/api/admin/albums/${album.id}/export/lightroom`),
+        adminFetch(`/api/admin/albums/${album.id}`),
+        adminFetch(`/api/admin/albums/${album.id}/export/lightroom`),
       ]);
 
       if (detailRes.ok) {
@@ -349,7 +393,7 @@ export const AdminDashboard: React.FC = () => {
     e.preventDefault();
     try {
       setSavingSettings(true);
-      const res = await fetch('/api/admin/settings', {
+      const res = await adminFetch('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings),
@@ -1221,7 +1265,7 @@ export const AdminDashboard: React.FC = () => {
                   </p>
                   <div className="flex flex-wrap items-center gap-3">
                     <a
-                      href={`/api/admin/albums/${activeExportAlbum.id}/export/script?os=win`}
+                      href={`/api/admin/albums/${activeExportAlbum.id}/export/script?os=win${getAdminKeyQuery()}`}
                       download={`copy_raw_${activeExportAlbum.slug}.bat`}
                       className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-200 transition-colors"
                     >
@@ -1230,7 +1274,7 @@ export const AdminDashboard: React.FC = () => {
                     </a>
 
                     <a
-                      href={`/api/admin/albums/${activeExportAlbum.id}/export/script?os=mac`}
+                      href={`/api/admin/albums/${activeExportAlbum.id}/export/script?os=mac${getAdminKeyQuery()}`}
                       download={`copy_raw_${activeExportAlbum.slug}.sh`}
                       className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-200 transition-colors"
                     >
