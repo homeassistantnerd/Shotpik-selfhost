@@ -252,6 +252,31 @@ export function parseEmbeddedFolderHtml(
     }
   }
 
+  // Pattern 5: Google Drive embedded list view flip-entry elements
+  // e.g. <div class="flip-entry" id="entry-<id>" ...> ... <div class="flip-entry-title">photo.jpg</div>
+  const flipPattern =
+    /class="flip-entry"[^>]*?id="entry-([a-zA-Z0-9_-]{25,})"[^>]*?>[\s\S]*?<div class="flip-entry-title">([^<]+)<\/div>/g;
+  while ((match = flipPattern.exec(html)) !== null) {
+    const [, id, rawName] = match;
+    const name = rawName.trim();
+    if (SUPPORTED_IMAGE_REGEX.test(name) && !seenIds.has(id)) {
+      seenIds.add(id);
+      discovered.push({ id, name });
+    }
+  }
+
+  // Pattern 6: Google Drive viewer anchors with nested flip-entry-title
+  const flipAnchorPattern =
+    /\/file\/d\/([a-zA-Z0-9_-]{25,})\/view[^"']*["'][\s\S]*?<div class="flip-entry-title">([^<]+)<\/div>/g;
+  while ((match = flipAnchorPattern.exec(html)) !== null) {
+    const [, id, rawName] = match;
+    const name = rawName.trim();
+    if (SUPPORTED_IMAGE_REGEX.test(name) && !seenIds.has(id)) {
+      seenIds.add(id);
+      discovered.push({ id, name });
+    }
+  }
+
   return discovered;
 }
 

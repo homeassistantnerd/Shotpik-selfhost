@@ -230,7 +230,7 @@ export const BrushCanvas: React.FC<BrushCanvasProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-zinc-950 select-none animate-fade-in">
+    <div className="fixed inset-0 z-[100010] flex flex-col bg-zinc-950 select-none animate-fade-in">
       {/* Top Bar */}
       <div className="flex items-center justify-between px-4 py-3 bg-zinc-900 border-b border-zinc-800 z-20">
         <div className="flex items-center gap-2">
