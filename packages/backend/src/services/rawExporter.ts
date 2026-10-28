@@ -41,7 +41,8 @@ const RAW_EXT_SET = new Set(
 );
 
 /**
- * Sanitizes and deduplicates an array of clean keys.
+ * Sanitizes and deduplicates an array of clean keys, stripping any
+ * shell metacharacters, quotes, path separators, or control characters.
  */
 function normalizeKeys(cleanKeys: string[]): string[] {
   const seen = new Set<string>();
@@ -49,10 +50,14 @@ function normalizeKeys(cleanKeys: string[]): string[] {
 
   for (const rawKey of cleanKeys) {
     if (!rawKey) continue;
-    const normalized = rawKey.trim().toLowerCase();
-    if (normalized && !seen.has(normalized)) {
-      seen.add(normalized);
-      result.push(normalized);
+    const sanitized = rawKey
+      .trim()
+      .toLowerCase()
+      .replace(/[\r\n"'`$\\;&|<>^%!]/g, '')
+      .replace(/[/\\]/g, '');
+    if (sanitized && !seen.has(sanitized)) {
+      seen.add(sanitized);
+      result.push(sanitized);
     }
   }
 
@@ -96,6 +101,7 @@ export function generateWindowsBatchScript(
   albumSlug: string,
   cleanKeys: string[]
 ): string {
+  const safeSlug = albumSlug.replace(/[^a-zA-Z0-9_\-]/g, '');
   const uniqueKeys = normalizeKeys(cleanKeys);
   const keysList = uniqueKeys.map((k) => `    "${k}"`).join('\r\n');
 
@@ -105,7 +111,7 @@ export function generateWindowsBatchScript(
     'setlocal enabledelayedexpansion',
     '',
     'echo ===================================================================',
-    `echo   Shotpik RAW Exporter - Album: ${albumSlug}`,
+    `echo   Shotpik RAW Exporter - Album: ${safeSlug}`,
     `echo   Total Selected Photos: ${uniqueKeys.length}`,
     'echo ===================================================================',
     'echo.',
@@ -177,12 +183,13 @@ export function generatePosixShellScript(
   albumSlug: string,
   cleanKeys: string[]
 ): string {
+  const safeSlug = albumSlug.replace(/[^a-zA-Z0-9_\-]/g, '');
   const uniqueKeys = normalizeKeys(cleanKeys);
-  const keysList = uniqueKeys.map((k) => `  "${k}"`).join('\n');
+  const keysList = uniqueKeys.map((k) => `  '${k}'`).join('\n');
 
   const script = [
     '#!/usr/bin/env bash',
-    `# Shotpik RAW File Exporter - Album: ${albumSlug}`,
+    `# Shotpik RAW File Exporter - Album: ${safeSlug}`,
     '# Copies selected camera RAW files into ./Selected_RAW/ subfolder',
     '',
     'set -euo pipefail',
@@ -191,7 +198,7 @@ export function generatePosixShellScript(
     'mkdir -p "$TARGET_DIR"',
     '',
     'echo "==================================================================="',
-    `echo "  Shotpik RAW Exporter - Album: ${albumSlug}"`,
+    `echo "  Shotpik RAW Exporter - Album: ${safeSlug}"`,
     `echo "  Total Selected Photos: ${uniqueKeys.length}"`,
     'echo "==================================================================="',
     'echo ""',
@@ -238,6 +245,105 @@ export function generatePosixShellScript(
   return script;
 }
 
+const DANGEROUS_SYSTEM_PATHS = [
+  '/',
+  '/bin',
+  '/boot',
+  '/dev',
+  '/etc',
+  '/lib',
+  '/proc',
+  '/root',
+  '/sbin',
+  '/sys',
+  '/usr',
+  '/var',
+];
+
+/**
+ * Validates that a server mount path is safe and does not target system roots or traversal.
+ */
+export function validateNasMountPath(mountPath: string): {
+  valid: boolean;
+  resolvedPath: string;
+  error?: string;
+} {
+  if (!mountPath || typeof mountPath !== 'string' || !mountPath.trim()) {
+    return { valid: false, resolvedPath: '', error: 'Mount path is required' };
+  }
+
+  // Prevent path traversal sequences
+  if (mountPath.includes('..')) {
+    return {
+      valid: false,
+      resolvedPath: '',
+      error: 'Path traversal sequences (..) are not allowed',
+    };
+  }
+
+  const resolved = path.resolve(mountPath.trim());
+
+  // Check against ALLOWED_NAS_ROOT if configured
+  const allowedRoot = process.env.ALLOWED_NAS_ROOT?.trim();
+  if (allowedRoot) {
+    const resolvedRoot = path.resolve(allowedRoot);
+    if (
+      !resolved.startsWith(resolvedRoot) ||
+      (resolved.length > resolvedRoot.length &&
+        resolved[resolvedRoot.length] !== path.sep)
+    ) {
+      return {
+        valid: false,
+        resolvedPath: resolved,
+        error: `Path must be within configured ALLOWED_NAS_ROOT: "${allowedRoot}"`,
+      };
+    }
+  }
+
+  // Prevent targeting root directories
+  const parsed = path.parse(resolved);
+  if (resolved === parsed.root) {
+    return {
+      valid: false,
+      resolvedPath: resolved,
+      error: 'Targeting filesystem drive root is not allowed',
+    };
+  }
+
+  // Prevent dangerous system directories on POSIX and Windows
+  const lowerResolved = resolved.toLowerCase().replace(/\\/g, '/');
+  for (const sysPath of DANGEROUS_SYSTEM_PATHS) {
+    if (lowerResolved === sysPath || lowerResolved.startsWith(sysPath + '/')) {
+      return {
+        valid: false,
+        resolvedPath: resolved,
+        error: `Access to system directory "${sysPath}" is forbidden`,
+      };
+    }
+  }
+
+  if (process.platform === 'win32') {
+    const winDir = (process.env.WINDIR || 'C:\\Windows')
+      .toLowerCase()
+      .replace(/\\/g, '/');
+    const progFiles = (process.env['ProgramFiles'] || 'C:\\Program Files')
+      .toLowerCase()
+      .replace(/\\/g, '/');
+    if (
+      lowerResolved.startsWith(winDir) ||
+      lowerResolved.startsWith(progFiles)
+    ) {
+      return {
+        valid: false,
+        resolvedPath: resolved,
+        error: 'Access to Windows system directories is forbidden',
+      };
+    }
+  }
+
+  return { valid: true, resolvedPath: resolved };
+}
+
 /**
  * Directly copies matching RAW files from a mounted local or NAS path into a Selected_RAW subdirectory.
  *
@@ -245,22 +351,42 @@ export function generatePosixShellScript(
  * @param cleanKeys Array of normalized clean keys
  * @returns Object summarizing copy statistics, copied filenames, and any errors encountered
  */
-export function copyLocalNasRawFiles(
+export async function copyLocalNasRawFiles(
   serverMountPath: string,
   cleanKeys: string[]
-): NasCopyResult {
+): Promise<NasCopyResult> {
   const result: NasCopyResult = {
     copiedCount: 0,
     copiedFiles: [],
     errors: [],
   };
 
-  if (!serverMountPath || !fs.existsSync(serverMountPath)) {
-    result.errors.push(`Server mount path does not exist: "${serverMountPath}"`);
+  const validation = validateNasMountPath(serverMountPath);
+  if (!validation.valid) {
+    result.errors.push(validation.error || 'Invalid server mount path');
     return result;
   }
 
-  const targetDir = path.join(serverMountPath, 'Selected_RAW');
+  const safeMountPath = validation.resolvedPath;
+
+  if (!fs.existsSync(safeMountPath)) {
+    result.errors.push(`Server mount path does not exist: "${safeMountPath}"`);
+    return result;
+  }
+
+  try {
+    const stat = fs.statSync(safeMountPath);
+    if (!stat.isDirectory()) {
+      result.errors.push(`Server mount path is not a directory: "${safeMountPath}"`);
+      return result;
+    }
+  } catch (statError) {
+    const msg = statError instanceof Error ? statError.message : String(statError);
+    result.errors.push(`Failed accessing "${safeMountPath}": ${msg}`);
+    return result;
+  }
+
+  const targetDir = path.join(safeMountPath, 'Selected_RAW');
   try {
     if (!fs.existsSync(targetDir)) {
       fs.mkdirSync(targetDir, { recursive: true });
@@ -271,14 +397,14 @@ export function copyLocalNasRawFiles(
     return result;
   }
 
-  // Scan serverMountPath and build cleanKey index
+  // Scan safeMountPath and build cleanKey index
   let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(serverMountPath, { withFileTypes: true });
+    entries = fs.readdirSync(safeMountPath, { withFileTypes: true });
   } catch (readDirError) {
     const msg =
       readDirError instanceof Error ? readDirError.message : String(readDirError);
-    result.errors.push(`Failed reading directory "${serverMountPath}": ${msg}`);
+    result.errors.push(`Failed reading directory "${safeMountPath}": ${msg}`);
     return result;
   }
 
@@ -308,17 +434,24 @@ export function copyLocalNasRawFiles(
     }
 
     for (const fileName of matchingFiles) {
-      const sourcePath = path.join(serverMountPath, fileName);
-      const destinationPath = path.join(targetDir, fileName);
+      const safeFileName = path.basename(fileName);
+      const sourcePath = path.join(safeMountPath, safeFileName);
+      const destinationPath = path.join(targetDir, safeFileName);
 
       try {
-        fs.copyFileSync(sourcePath, destinationPath);
-        result.copiedFiles.push(fileName);
+        const stat = await fs.promises.lstat(sourcePath);
+        if (stat.isSymbolicLink()) {
+          result.errors.push(`Skipping symlink: ${safeFileName}`);
+          continue;
+        }
+
+        await fs.promises.copyFile(sourcePath, destinationPath);
+        result.copiedFiles.push(safeFileName);
         result.copiedCount += 1;
-      } catch (copyError) {
-        const msg =
-          copyError instanceof Error ? copyError.message : String(copyError);
-        result.errors.push(`Failed copying "${fileName}": ${msg}`);
+      } catch (copyError: any) {
+        result.errors.push(
+          `Failed to copy ${safeFileName}: ${copyError.message}`
+        );
       }
     }
   }

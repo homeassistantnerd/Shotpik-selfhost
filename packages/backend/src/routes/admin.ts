@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, inArray } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import {
   extractGDriveFolderId,
@@ -28,6 +28,7 @@ import {
   generateWindowsBatchScript,
   generatePosixShellScript,
   copyLocalNasRawFiles,
+  validateNasMountPath,
 } from '../services/rawExporter.js';
 
 export const adminRouter = Router();
@@ -116,6 +117,17 @@ adminRouter.post('/albums', async (req: Request, res: Response) => {
       serverMountPath,
     } = validation.data;
 
+    let validatedServerMountPath: string | null = null;
+    if (serverMountPath && serverMountPath.trim()) {
+      const mountValidation = validateNasMountPath(serverMountPath);
+      if (!mountValidation.valid) {
+        return res.status(400).json({
+          error: mountValidation.error || 'Đường dẫn thư mục NAS không hợp lệ',
+        });
+      }
+      validatedServerMountPath = mountValidation.resolvedPath;
+    }
+
     const gdriveFolderId = extractGDriveFolderId(gdriveFolderUrl);
     if (!gdriveFolderId) {
       return res.status(400).json({
@@ -150,7 +162,7 @@ adminRouter.post('/albums', async (req: Request, res: Response) => {
       selectionFinishedAt: null,
       deadlineAt: null,
       passwordHash: null,
-      serverMountPath: serverMountPath ? serverMountPath.trim() : null,
+      serverMountPath: validatedServerMountPath,
       createdAt: new Date().toISOString(),
     };
 
@@ -244,14 +256,20 @@ adminRouter.get('/albums/:id', async (req: Request, res: Response) => {
     let rawBrushNotes: BrushNoteTable[] = [];
 
     if (photoIds.length > 0) {
-      const allSelections = await db.select().from(selections);
-      albumSelections = allSelections.filter((s) => photoIdSet.has(s.photoId));
+      albumSelections = await db
+        .select()
+        .from(selections)
+        .where(inArray(selections.photoId, photoIds));
 
-      const allComments = await db.select().from(comments);
-      albumComments = allComments.filter((c) => photoIdSet.has(c.photoId));
+      albumComments = await db
+        .select()
+        .from(comments)
+        .where(inArray(comments.photoId, photoIds));
 
-      const allBrushNotes = await db.select().from(brushNotes);
-      rawBrushNotes = allBrushNotes.filter((b) => photoIdSet.has(b.photoId));
+      rawBrushNotes = await db
+        .select()
+        .from(brushNotes)
+        .where(inArray(brushNotes.photoId, photoIds));
     }
 
     const parsedBrushNotes = rawBrushNotes.map((b) => {
@@ -328,8 +346,19 @@ adminRouter.patch('/albums/:id', async (req: Request, res: Response) => {
     if (maxSelections !== undefined) updates.maxSelections = maxSelections;
     if (isLocked !== undefined) updates.isLocked = isLocked;
     if (deadlineAt !== undefined) updates.deadlineAt = deadlineAt;
-    if (serverMountPath !== undefined)
-      updates.serverMountPath = serverMountPath ? serverMountPath.trim() : null;
+    if (serverMountPath !== undefined) {
+      if (serverMountPath && serverMountPath.trim()) {
+        const mountValidation = validateNasMountPath(serverMountPath);
+        if (!mountValidation.valid) {
+          return res.status(400).json({
+            error: mountValidation.error || 'Đường dẫn thư mục NAS không hợp lệ',
+          });
+        }
+        updates.serverMountPath = mountValidation.resolvedPath;
+      } else {
+        updates.serverMountPath = null;
+      }
+    }
 
     if (req.body.customerName && typeof req.body.customerName === 'string') {
       updates.customerName = req.body.customerName.trim();
@@ -490,14 +519,18 @@ adminRouter.get('/albums/:id/export/lightroom', async (req: Request, res: Respon
       .from(photos)
       .where(eq(photos.albumId, id));
     const photoMap = new Map(albumPhotos.map((p) => [p.id, p]));
-    const photoIdSet = new Set(albumPhotos.map((p) => p.id));
+    const photoIds = albumPhotos.map((p) => p.id);
 
-    const allSelections = await db.select().from(selections);
-    const distinctSelectedPhotoIds = new Set(
-      allSelections
-        .filter((s) => photoIdSet.has(s.photoId))
-        .map((s) => s.photoId)
-    );
+    let distinctSelectedPhotoIds = new Set<string>();
+    if (photoIds.length > 0) {
+      const albumSelections = await db
+        .select({ photoId: selections.photoId })
+        .from(selections)
+        .where(inArray(selections.photoId, photoIds));
+      distinctSelectedPhotoIds = new Set(
+        albumSelections.map((s) => s.photoId)
+      );
+    }
 
     const cleanKeys = Array.from(distinctSelectedPhotoIds)
       .map((pid) => photoMap.get(pid)?.cleanKey)
@@ -554,14 +587,18 @@ adminRouter.get('/albums/:id/export/script', async (req: Request, res: Response)
       .from(photos)
       .where(eq(photos.albumId, id));
     const photoMap = new Map(albumPhotos.map((p) => [p.id, p]));
-    const photoIdSet = new Set(albumPhotos.map((p) => p.id));
+    const photoIds = albumPhotos.map((p) => p.id);
 
-    const allSelections = await db.select().from(selections);
-    const distinctSelectedPhotoIds = new Set(
-      allSelections
-        .filter((s) => photoIdSet.has(s.photoId))
-        .map((s) => s.photoId)
-    );
+    let distinctSelectedPhotoIds = new Set<string>();
+    if (photoIds.length > 0) {
+      const albumSelections = await db
+        .select({ photoId: selections.photoId })
+        .from(selections)
+        .where(inArray(selections.photoId, photoIds));
+      distinctSelectedPhotoIds = new Set(
+        albumSelections.map((s) => s.photoId)
+      );
+    }
 
     const cleanKeys = Array.from(distinctSelectedPhotoIds)
       .map((pid) => photoMap.get(pid)?.cleanKey)
@@ -608,33 +645,46 @@ adminRouter.post('/albums/:id/export/nas-copy', async (req: Request, res: Respon
     }
 
     const album = albumList[0];
-    const mountPath = req.body.serverMountPath || album.serverMountPath;
+    const rawMountPath = req.body.serverMountPath || album.serverMountPath;
 
-    if (!mountPath) {
+    if (!rawMountPath) {
       return res.status(400).json({
         error: 'Album does not have a serverMountPath configured',
       });
     }
+
+    const mountValidation = validateNasMountPath(rawMountPath);
+    if (!mountValidation.valid) {
+      return res.status(400).json({
+        error: mountValidation.error || 'Đường dẫn thư mục NAS không hợp lệ',
+      });
+    }
+
+    const mountPath = mountValidation.resolvedPath;
 
     const albumPhotos = await db
       .select()
       .from(photos)
       .where(eq(photos.albumId, id));
     const photoMap = new Map(albumPhotos.map((p) => [p.id, p]));
-    const photoIdSet = new Set(albumPhotos.map((p) => p.id));
+    const photoIds = albumPhotos.map((p) => p.id);
 
-    const allSelections = await db.select().from(selections);
-    const distinctSelectedPhotoIds = new Set(
-      allSelections
-        .filter((s) => photoIdSet.has(s.photoId))
-        .map((s) => s.photoId)
-    );
+    let distinctSelectedPhotoIds = new Set<string>();
+    if (photoIds.length > 0) {
+      const albumSelections = await db
+        .select({ photoId: selections.photoId })
+        .from(selections)
+        .where(inArray(selections.photoId, photoIds));
+      distinctSelectedPhotoIds = new Set(
+        albumSelections.map((s) => s.photoId)
+      );
+    }
 
     const cleanKeys = Array.from(distinctSelectedPhotoIds)
       .map((pid) => photoMap.get(pid)?.cleanKey)
       .filter((k): k is string => Boolean(k));
 
-    const copyResult = copyLocalNasRawFiles(mountPath, cleanKeys);
+    const copyResult = await copyLocalNasRawFiles(mountPath, cleanKeys);
 
     return res.json({
       success: copyResult.errors.length === 0,

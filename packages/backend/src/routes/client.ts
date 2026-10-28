@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import {
   createChooserSchema,
@@ -68,14 +68,20 @@ clientRouter.get('/albums/:slug', async (req: Request, res: Response) => {
     let rawBrushNotes: BrushNoteTable[] = [];
 
     if (photoIds.length > 0) {
-      const allSelections = await db.select().from(selections);
-      albumSelections = allSelections.filter((s) => photoIdSet.has(s.photoId));
+      albumSelections = await db
+        .select()
+        .from(selections)
+        .where(inArray(selections.photoId, photoIds));
 
-      const allComments = await db.select().from(comments);
-      albumComments = allComments.filter((c) => photoIdSet.has(c.photoId));
+      albumComments = await db
+        .select()
+        .from(comments)
+        .where(inArray(comments.photoId, photoIds));
 
-      const allBrushNotes = await db.select().from(brushNotes);
-      rawBrushNotes = allBrushNotes.filter((b) => photoIdSet.has(b.photoId));
+      rawBrushNotes = await db
+        .select()
+        .from(brushNotes)
+        .where(inArray(brushNotes.photoId, photoIds));
     }
 
     const parsedBrushNotes = rawBrushNotes.map((b) => {
@@ -198,6 +204,34 @@ clientRouter.post('/albums/:slug/select', async (req: Request, res: Response) =>
       });
     }
 
+    // Verify photo belongs to this album
+    const photoRecord = await db
+      .select({ id: photos.id })
+      .from(photos)
+      .where(and(eq(photos.id, photoId), eq(photos.albumId, album.id)))
+      .limit(1);
+
+    if (photoRecord.length === 0) {
+      return res.status(400).json({
+        selected: false,
+        error: 'Photo does not belong to this album',
+      });
+    }
+
+    // Verify chooser belongs to this album
+    const chooserRecord = await db
+      .select({ id: choosers.id })
+      .from(choosers)
+      .where(and(eq(choosers.id, chooserId), eq(choosers.albumId, album.id)))
+      .limit(1);
+
+    if (chooserRecord.length === 0) {
+      return res.status(400).json({
+        selected: false,
+        error: 'Chooser does not belong to this album',
+      });
+    }
+
     // Run inside a SQLite transaction for atomic quota protection
     const txResult = db.transaction((tx) => {
       const existing = tx
@@ -225,16 +259,20 @@ clientRouter.post('/albums/:slug/select', async (req: Request, res: Response) =>
         .from(photos)
         .where(eq(photos.albumId, album.id))
         .all();
-      const photoIdSet = new Set(albumPhotos.map((p) => p.id));
+      const albumPhotoIds = albumPhotos.map((p) => p.id);
 
-      const allSelections = tx.select().from(selections).all();
-      const existingAlbumSelections = allSelections.filter((s) =>
-        photoIdSet.has(s.photoId)
-      );
+      let distinctLikedPhotoIds = new Set<string>();
+      if (albumPhotoIds.length > 0) {
+        const existingAlbumSelections = tx
+          .select({ photoId: selections.photoId })
+          .from(selections)
+          .where(inArray(selections.photoId, albumPhotoIds))
+          .all();
 
-      const distinctLikedPhotoIds = new Set(
-        existingAlbumSelections.map((s) => s.photoId)
-      );
+        distinctLikedPhotoIds = new Set(
+          existingAlbumSelections.map((s) => s.photoId)
+        );
+      }
 
       if (
         !distinctLikedPhotoIds.has(photoId) &&
@@ -301,6 +339,29 @@ clientRouter.post('/albums/:slug/comments', async (req: Request, res: Response) 
     }
 
     const { photoId, chooserId, text, tag } = validation.data;
+
+    // Verify photo belongs to this album
+    const photoRecord = await db
+      .select({ id: photos.id })
+      .from(photos)
+      .where(and(eq(photos.id, photoId), eq(photos.albumId, album.id)))
+      .limit(1);
+
+    if (photoRecord.length === 0) {
+      return res.status(400).json({ error: 'Photo does not belong to this album' });
+    }
+
+    // Verify chooser belongs to this album
+    const chooserRecord = await db
+      .select({ id: choosers.id })
+      .from(choosers)
+      .where(and(eq(choosers.id, chooserId), eq(choosers.albumId, album.id)))
+      .limit(1);
+
+    if (chooserRecord.length === 0) {
+      return res.status(400).json({ error: 'Chooser does not belong to this album' });
+    }
+
     const newComment = {
       id: crypto.randomUUID(),
       photoId,
@@ -343,14 +404,48 @@ clientRouter.delete(
         return res.status(403).json({ error: 'Album is locked' });
       }
 
-      const existingComment = await db
+      const existingCommentList = await db
         .select()
         .from(comments)
         .where(eq(comments.id, commentId))
         .limit(1);
 
-      if (existingComment.length === 0) {
+      if (existingCommentList.length === 0) {
         return res.status(404).json({ error: 'Comment not found' });
+      }
+
+      const targetComment = existingCommentList[0];
+
+      // Verify comment belongs to a photo in this album
+      const photoRecord = await db
+        .select({ id: photos.id })
+        .from(photos)
+        .where(
+          and(
+            eq(photos.id, targetComment.photoId),
+            eq(photos.albumId, album.id)
+          )
+        )
+        .limit(1);
+
+      if (photoRecord.length === 0) {
+        return res.status(403).json({ error: 'Comment does not belong to this album' });
+      }
+
+      const requesterChooserId =
+        (req.query.chooserId as string)?.trim() ||
+        (req.headers['x-chooser-id'] as string)?.trim();
+
+      if (!requesterChooserId) {
+        return res.status(401).json({
+          error: 'Chooser identity is required to delete comments',
+        });
+      }
+
+      if (targetComment.chooserId && targetComment.chooserId !== requesterChooserId) {
+        return res.status(403).json({
+          error: 'You can only delete your own comments',
+        });
       }
 
       await db.delete(comments).where(eq(comments.id, commentId));
@@ -393,6 +488,29 @@ clientRouter.post('/albums/:slug/brush', async (req: Request, res: Response) => 
     }
 
     const { photoId, chooserId, pathsJson } = validation.data;
+
+    // Verify photo belongs to this album
+    const photoRecord = await db
+      .select({ id: photos.id })
+      .from(photos)
+      .where(and(eq(photos.id, photoId), eq(photos.albumId, album.id)))
+      .limit(1);
+
+    if (photoRecord.length === 0) {
+      return res.status(400).json({ error: 'Photo does not belong to this album' });
+    }
+
+    // Verify chooser belongs to this album
+    const chooserRecord = await db
+      .select({ id: choosers.id })
+      .from(choosers)
+      .where(and(eq(choosers.id, chooserId), eq(choosers.albumId, album.id)))
+      .limit(1);
+
+    if (chooserRecord.length === 0) {
+      return res.status(400).json({ error: 'Chooser does not belong to this album' });
+    }
+
     const strokes: Stroke[] =
       typeof pathsJson === 'string' ? JSON.parse(pathsJson) : pathsJson;
 
@@ -463,6 +581,16 @@ clientRouter.post('/albums/:slug/brush', async (req: Request, res: Response) => 
 clientRouter.post('/albums/:slug/finish', async (req: Request, res: Response) => {
   try {
     const { slug } = req.params;
+    const chooserId =
+      (req.body.chooserId as string)?.trim() ||
+      (req.headers['x-chooser-id'] as string)?.trim();
+
+    if (!chooserId) {
+      return res.status(401).json({
+        error: 'Chooser identity is required to finalize album selection',
+      });
+    }
+
     const albumList = await db
       .select()
       .from(albums)
@@ -474,8 +602,21 @@ clientRouter.post('/albums/:slug/finish', async (req: Request, res: Response) =>
     }
 
     const album = albumList[0];
-    const finishedAt = new Date().toISOString();
 
+    // Verify chooser belongs to this album
+    const chooserRecord = await db
+      .select({ id: choosers.id })
+      .from(choosers)
+      .where(and(eq(choosers.id, chooserId), eq(choosers.albumId, album.id)))
+      .limit(1);
+
+    if (chooserRecord.length === 0) {
+      return res.status(403).json({
+        error: 'Chooser does not belong to this album',
+      });
+    }
+
+    const finishedAt = new Date().toISOString();
     await db
       .update(albums)
       .set({ isLocked: true, selectionFinishedAt: finishedAt })

@@ -6,14 +6,46 @@ import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import { clientRouter } from './routes/client.js';
 import { adminRouter } from './routes/admin.js';
+import { adminAuthMiddleware } from './middleware/auth.js';
 
 dotenv.config();
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
 
-// Configure core middleware
-app.use(cors());
+// Configure CORS origin allowlist
+const defaultAllowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:5173',
+];
+
+const envOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
+  : [];
+
+const allowedOrigins = Array.from(new Set([...defaultAllowedOrigins, ...envOrigins]));
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (mobile apps, curl, server-to-server)
+      if (!origin) return callback(null, true);
+
+      if (
+        allowedOrigins.includes(origin) ||
+        (process.env.NODE_ENV !== 'production' &&
+          /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin))
+      ) {
+        return callback(null, true);
+      }
+
+      return callback(new Error(`CORS origin "${origin}" not allowed`), false);
+    },
+    credentials: true,
+  })
+);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -28,7 +60,7 @@ app.get('/api/health', (_req, res) => {
 
 // Mount modular API routers
 app.use('/api/client', clientRouter);
-app.use('/api/admin', adminRouter);
+app.use('/api/admin', adminAuthMiddleware, adminRouter);
 
 /**
  * Resolves the production static frontend build output directory.

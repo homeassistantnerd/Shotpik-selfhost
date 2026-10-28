@@ -56,9 +56,9 @@ export const normalizedPointSchema = z.object({
  * Stroke vector validation schema
  */
 export const strokeSchema = z.object({
-  points: z.array(normalizedPointSchema).min(1),
-  color: z.string().optional(),
-  width: z.number().positive().optional(),
+  points: z.array(normalizedPointSchema).min(1).max(2000),
+  color: z.string().max(50).optional(),
+  width: z.number().positive().max(100).optional(),
 });
 
 /**
@@ -69,15 +69,18 @@ export const saveBrushSchema = z.object({
   photoId: z.string().min(1, 'photoId là bắt buộc'),
   chooserId: z.string().min(1, 'chooserId là bắt buộc'),
   pathsJson: z.union([
-    z.string().refine((val) => {
-      try {
-        const parsed = JSON.parse(val);
-        return Array.isArray(parsed);
-      } catch {
-        return false;
-      }
-    }, 'pathsJson phải là chuỗi JSON hợp lệ của mảng strokes'),
-    z.array(strokeSchema),
+    z
+      .string()
+      .max(500_000, 'pathsJson vượt quá độ dài tối đa cho phép')
+      .refine((val) => {
+        try {
+          const parsed = JSON.parse(val);
+          return Array.isArray(parsed) && parsed.length <= 200;
+        } catch {
+          return false;
+        }
+      }, 'pathsJson phải là chuỗi JSON hợp lệ của mảng tối đa 200 nét vẽ'),
+    z.array(strokeSchema).max(200, 'Tối đa 200 nét vẽ trên mỗi ảnh'),
   ]),
 });
 
