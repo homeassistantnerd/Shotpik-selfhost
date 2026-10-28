@@ -1,0 +1,14 @@
+@import 'photoswipe/style.css';
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom PhotoSwipe styling & pointer-events rules */
+.pswp__custom-overlay-backdrop {
+  pointer-events: none;
+}
+
+.pswp__dynamic-caption,
+.pswp__custom-action-bar {
+  pointer-events: auto;
+}

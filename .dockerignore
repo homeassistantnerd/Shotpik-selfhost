@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+.git/
+.env
+data/*.db
+data/*.db-wal
+data/*.db-shm
+*.log
+README.md
+CLAUDE.md

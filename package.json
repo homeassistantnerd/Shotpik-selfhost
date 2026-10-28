@@ -1,0 +1,28 @@
+{
+  "name": "shotpik-local-stack",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Self-hosted photo proofing and selection service inspired by Shotpik",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @shotpik/shared && npm run build -w @shotpik/backend && npm run build -w @shotpik/frontend",
+    "build:shared": "npm run build -w @shotpik/shared",
+    "build:backend": "npm run build -w @shotpik/backend",
+    "build:frontend": "npm run build -w @shotpik/frontend",
+    "start": "npm run start -w @shotpik/backend",
+    "dev:backend": "npm run dev -w @shotpik/backend",
+    "dev:frontend": "npm run dev -w @shotpik/frontend"
+  },
+  "keywords": [
+    "shotpik",
+    "photo-selection",
+    "proofing",
+    "photography",
+    "google-drive",
+    "lightroom"
+  ],
+  "author": "",
+  "license": "MIT"
+}
