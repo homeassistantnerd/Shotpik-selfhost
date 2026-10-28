@@ -346,7 +346,12 @@ export const PhotoSwipeGallery: React.FC<PhotoSwipeGalleryProps> = ({
               {/* Comment Drawer Trigger */}
               <button
                 type="button"
-                onClick={() => onOpenCommentDrawer(activePhoto)}
+                onClick={() => {
+                  if (pswpRef.current) {
+                    pswpRef.current.close();
+                  }
+                  onOpenCommentDrawer(activePhoto);
+                }}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 transition-colors"
                 title="Mở ghi chú chỉnh sửa"
               >

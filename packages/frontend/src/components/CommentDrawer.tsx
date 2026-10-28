@@ -97,7 +97,7 @@ export const CommentDrawer: React.FC<CommentDrawerProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 overflow-hidden bg-black/60 backdrop-blur-sm animate-fade-in flex justify-end">
+    <div className="fixed inset-0 z-[100010] overflow-hidden bg-black/60 backdrop-blur-sm animate-fade-in flex justify-end">
       {/* Click outside to close */}
       <div className="absolute inset-0" onClick={onClose} aria-hidden="true" />
 
